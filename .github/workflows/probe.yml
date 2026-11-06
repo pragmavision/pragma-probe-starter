@@ -26,7 +26,7 @@ jobs:
     permissions:
       contents: read
       id-token: write
-    uses: pragmavision/pragma-probe-starter/.github/workflows/examiner.yml@3b94c29b96f6807404616e8638b5fa7dd7efd9a4
+    uses: pragmavision/pragma-probe-starter/.github/workflows/examiner.yml@6c2f7ceddee0f5b2960730dff2dc0ec3bbff394e
     with:
       submission: ${{ inputs.submission }}
       nonce: ${{ inputs.nonce }}

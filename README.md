@@ -25,7 +25,7 @@ python examiner/harness.py latency-summary solution.py --seed SEED_FROM_ACTIONS
 
 The trusted host generates the seed, test inputs and expected answers. Fourteen cases each run twice in fresh containers. Actions logs the seed and case number so the exact input sequence can be reproduced. Local checks are useful during development; only the pinned trusted GitHub workflow can create BU credit. Finite tests do not prove absence of every bug, hardcoded response or academic misconduct.
 
-The accepted workflow is pinned at `3b94c29b96f6807404616e8638b5fa7dd7efd9a4`; its harness is pinned at `8d091adf9c6164437afafc09678e94e8febe901c`. Editing the caller cannot change either trusted revision or the tested GitHub commit. Candidate execution has no OIDC permission. A separate fresh job reports only a completed trusted verdict with a GitHub-signed identity token; it executes no candidate content. Timeout or setup failure emits no verdict.
+The accepted workflow is pinned at `6c2f7ceddee0f5b2960730dff2dc0ec3bbff394e`; its harness is pinned at `8d091adf9c6164437afafc09678e94e8febe901c`. Editing the caller cannot change either trusted revision or the tested GitHub commit. Candidate execution has no OIDC permission. A separate fresh job reports only a completed trusted verdict with a GitHub-signed identity token; it executes no candidate content. Timeout or setup failure emits no verdict.
 
 The container runs as a non-root UID, with no network, a read-only filesystem, all capabilities dropped, no new privileges, one CPU, 128 MiB memory, 32 PIDs, disabled Docker logs, bounded combined output and a wall-clock limit. These controls are for small educational Python programs, not arbitrary workloads.
 
