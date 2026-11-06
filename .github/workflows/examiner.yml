@@ -1,0 +1,91 @@
+name: Trusted BU examiner v1
+on:
+  workflow_call:
+    inputs:
+      submission:
+        required: true
+        type: string
+      nonce:
+        required: true
+        type: string
+      challenge:
+        required: true
+        type: string
+permissions: {}
+jobs:
+  examine:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 10
+    permissions:
+      contents: read
+    steps:
+      - name: Checkout immutable trusted harness
+        uses: actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803
+        with:
+          repository: pragmavision/pragma-probe-starter
+          ref: e9cfd1d01d3e20a3b10f792e995367a104785b78
+          path: trusted
+          persist-credentials: false
+      - name: Checkout exact caller commit
+        uses: actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803
+        with:
+          repository: ${{ github.repository }}
+          ref: ${{ github.sha }}
+          path: candidate
+          persist-credentials: false
+          submodules: false
+          lfs: false
+      - name: Fetch immutable language image
+        run: docker pull python@sha256:09a17cad02668ae61ece136b4fd36ac3849e14f670ebedb637ea3e15580525bc
+      - name: Verify reference boundary cases
+        run: python3 trusted/examiner/test_harness.py
+      - name: Execute isolated candidate against randomized oracle
+        env:
+          BU_CHALLENGE: ${{ inputs.challenge }}
+        run: python3 trusted/examiner/harness.py "$BU_CHALLENGE" candidate/solution.py
+  attest:
+    needs: examine
+    if: ${{ always() && (needs.examine.result == 'success' || needs.examine.result == 'failure') }}
+    runs-on: ubuntu-24.04
+    timeout-minutes: 3
+    permissions:
+      id-token: write
+    steps:
+      # Fresh runner: no checkout, candidate artifacts, dependencies or code.
+      - name: Send trusted outcome to BU
+        env:
+          BU_SUBMISSION: ${{ inputs.submission }}
+          BU_NONCE: ${{ inputs.nonce }}
+          BU_CHALLENGE: ${{ inputs.challenge }}
+          BU_RESULT: ${{ needs.examine.result }}
+        shell: bash
+        run: |
+          python3 - <<'PY'
+          import json, os, re, sys, urllib.parse, urllib.request
+          try:
+              submission, nonce, challenge = (os.environ[k] for k in ('BU_SUBMISSION','BU_NONCE','BU_CHALLENGE'))
+              if not re.fullmatch(r'[0-9a-f]{8}(?:-[0-9a-f]{4}){3}-[0-9a-f]{12}',submission): raise ValueError('id')
+              if not re.fullmatch(r'[A-Za-z0-9_-]{43}',nonce): raise ValueError('nonce')
+              if challenge not in ('rpki-origin','packet-counts','readonly-policy','latency-summary','path-policy'): raise ValueError('challenge')
+              print('::add-mask::'+nonce)
+              audience='https://bydgoszcz.university/api/lab/attest'
+              url=os.environ['ACTIONS_ID_TOKEN_REQUEST_URL']+'&audience='+urllib.parse.quote(audience,safe='')
+              request=urllib.request.Request(url,headers={'Authorization':'Bearer '+os.environ['ACTIONS_ID_TOKEN_REQUEST_TOKEN']})
+              with urllib.request.urlopen(request,timeout=20) as response:
+                  raw=response.read(32769)
+                  if len(raw)>32768: raise ValueError('token size')
+                  token=json.loads(raw)['value']
+              print('::add-mask::'+token)
+              status='passed' if os.environ['BU_RESULT']=='success' else 'failed'
+              body=json.dumps({'submission':submission,'nonce':nonce,'challenge':challenge,'status':status}).encode()
+              request=urllib.request.Request(audience,data=body,method='POST',headers={'Authorization':'Bearer '+token,'Content-Type':'application/json'})
+              with urllib.request.urlopen(request,timeout=30) as response:
+                  raw=response.read(4097)
+                  if len(raw)>4096: raise ValueError('response size')
+                  result=json.loads(raw)
+              if result.get('status')!=status or result.get('id')!=submission: raise ValueError('receipt mismatch')
+              print('BU receipt recorded: '+status+'. Technical verification only.')
+          except Exception:
+              print('BU could not record this run. Check the registration, owner, commit and 24-hour validity; retry from BU if needed.')
+              sys.exit(1)
+          PY
