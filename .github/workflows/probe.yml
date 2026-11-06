@@ -1,0 +1,33 @@
+name: BU examiner
+on:
+  workflow_dispatch:
+    inputs:
+      submission:
+        description: Submission ID from BU
+        required: true
+        type: string
+      nonce:
+        description: One-time nonce from BU (do not commit it)
+        required: true
+        type: string
+      challenge:
+        description: Registered challenge
+        required: true
+        type: choice
+        options:
+          - latency-summary
+          - rpki-origin
+          - packet-counts
+          - readonly-policy
+          - path-policy
+permissions: {}
+jobs:
+  verify:
+    permissions:
+      contents: read
+      id-token: write
+    uses: pragmavision/pragma-probe-starter/.github/workflows/examiner.yml@3b94c29b96f6807404616e8638b5fa7dd7efd9a4
+    with:
+      submission: ${{ inputs.submission }}
+      nonce: ${{ inputs.nonce }}
+      challenge: ${{ inputs.challenge }}
