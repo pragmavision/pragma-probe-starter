@@ -4,6 +4,7 @@ import concurrent.futures
 import ipaddress
 import json
 import math
+import os
 import pathlib
 import random
 import shutil
@@ -15,6 +16,10 @@ IMAGE = 'python@sha256:09a17cad02668ae61ece136b4fd36ac3849e14f670ebedb637ea3e155
 CHALLENGES = ('rpki-origin', 'packet-counts', 'readonly-policy', 'latency-summary', 'path-policy')
 READ_ACTIONS = {'get_routes', 'get_interfaces', 'get_logs'}
 WRITE_ACTIONS = {'set_route', 'restart_interface', 'apply_config'}
+
+
+class CandidateError(ValueError):
+    """A completed candidate check failed; safe fixed messages only."""
 
 
 def oracle(challenge, data):
@@ -47,8 +52,8 @@ def oracle(challenge, data):
     raise ValueError('Unknown challenge')
 
 
-def cases(challenge):
-    rng = random.SystemRandom()
+def cases(challenge, seed):
+    rng = random.Random(seed)
     for i in range(14):
         if challenge == 'rpki-origin':
             asn = rng.randrange(64512, 65535)
@@ -106,19 +111,23 @@ def equivalent(a, b):
 
 def run_container(source, data):
     name = 'bu-examiner-'+uuid.uuid4().hex
-    command = ['docker','run','--rm','--name',name,'--network','none','--read-only','--user','65534:65534',
+    command = ['docker','run','--rm','--name',name,'--log-driver','none','--network','none','--read-only','--user','65534:65534',
                '--cap-drop','ALL','--security-opt','no-new-privileges','--cpus','1','--memory','128m','--memory-swap','128m',
                '--pids-limit','32','--ulimit','nofile=64:64','--mount',f'type=bind,src={source},dst=/submission,readonly',
                '-i',IMAGE,'python','-I','-B','/submission/solution.py']
-    process = subprocess.Popen(command, stdin=subprocess.PIPE, stdout=subprocess.PIPE, stderr=subprocess.DEVNULL)
+    process = subprocess.Popen(command, stdin=subprocess.PIPE, stdout=subprocess.PIPE, stderr=subprocess.STDOUT)
     pool = concurrent.futures.ThreadPoolExecutor(max_workers=1)
     try:
         process.stdin.write((json.dumps(data)+'\n').encode())
         process.stdin.close()
         output = pool.submit(process.stdout.read, 16385).result(timeout=12)
-        if len(output)>16384: raise ValueError('Output limit exceeded')
-        if process.wait(timeout=2) != 0: raise ValueError('Program failed')
-        return json.loads(output, parse_constant=lambda _: (_ for _ in ()).throw(ValueError('Nonfinite JSON')))
+        if len(output)>16384: raise CandidateError('Output limit exceeded')
+        code = process.wait(timeout=2)
+        if code in (125,126,127): raise RuntimeError('Container setup unavailable')
+        if code != 0: raise CandidateError('Program failed')
+        try:
+            return json.loads(output, parse_constant=lambda _: (_ for _ in ()).throw(ValueError()))
+        except (ValueError,UnicodeError): raise CandidateError('Invalid JSON output') from None
     finally:
         subprocess.run(['docker','rm','-f',name], stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL, timeout=15)
         if process.poll() is None: process.kill()
@@ -127,23 +136,26 @@ def run_container(source, data):
         process.stdout.close()
 
 
-def examine(challenge, solution):
+def examine(challenge, solution, seed=None):
     if challenge not in CHALLENGES: raise ValueError('Unknown challenge')
     # Only this regular file crosses the trust boundary; never a student Dockerfile,
     # dependency manifest, action, executable or symlink from the checkout.
     if solution.is_symlink() or not solution.is_file() or solution.stat().st_size>65536:
-        raise ValueError('solution.py must be a regular file, at most 64 KiB')
+        raise CandidateError('solution.py must be a regular file, at most 64 KiB')
+    seed = random.SystemRandom().getrandbits(128) if seed is None else seed
+    print(f'Reproduction seed: {seed}', flush=True)
     with tempfile.TemporaryDirectory(prefix='bu-examiner-') as temp:
         source = pathlib.Path(temp)
         shutil.copyfile(solution, source/'solution.py')
         source.chmod(0o755)
         (source/'solution.py').chmod(0o444)
-        for index, data in enumerate(cases(challenge), 1):
+        for index, data in enumerate(cases(challenge, seed), 1):
+            print(f'Checking case {index}/14', flush=True)
             expected = oracle(challenge, data)
             first = run_container(source, data)
             second = run_container(source, data)
-            if not equivalent(first,second): raise ValueError(f'Case {index}: nondeterministic output')
-            if not equivalent(first,expected): raise ValueError(f'Case {index}: contract mismatch')
+            if not equivalent(first,second): raise CandidateError(f'Case {index}: nondeterministic output')
+            if not equivalent(first,expected): raise CandidateError(f'Case {index}: contract mismatch')
         print('PASS: 14 oracle cases, each executed twice; technical verification only.')
 
 
@@ -151,9 +163,19 @@ if __name__ == '__main__':
     parser = argparse.ArgumentParser()
     parser.add_argument('challenge', choices=CHALLENGES)
     parser.add_argument('solution', type=pathlib.Path)
+    parser.add_argument('--seed',type=int,help='Reproduce a recorded run locally; accepted workflow always generates its own seed')
     args = parser.parse_args()
-    try: examine(args.challenge, args.solution)
-    except Exception as error:
+    def verdict(value):
+        if os.environ.get('GITHUB_OUTPUT'):
+            with open(os.environ['GITHUB_OUTPUT'],'a',encoding='utf-8') as out: out.write('verdict='+value+'\n')
+    try:
+        examine(args.challenge, args.solution, args.seed)
+        verdict('passed')
+    except CandidateError as error:
+        print('FAIL: '+str(error))
+        verdict('failed')
+        raise SystemExit(2)
+    except Exception:
         # Never copy student stdout, exception text, or Actions commands to the log.
-        print('FAIL: '+type(error).__name__+'; contract, execution or isolation check failed.')
+        print('UNAVAILABLE: execution or infrastructure did not yield a verified result. No BU verdict was emitted.')
         raise SystemExit(1)
