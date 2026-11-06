@@ -16,6 +16,8 @@ jobs:
   examine:
     runs-on: ubuntu-24.04
     timeout-minutes: 10
+    outputs:
+      verdict: ${{ steps.probe.outputs.verdict }}
     permissions:
       contents: read
     steps:
@@ -23,7 +25,7 @@ jobs:
         uses: actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803
         with:
           repository: pragmavision/pragma-probe-starter
-          ref: e9cfd1d01d3e20a3b10f792e995367a104785b78
+          ref: 8d091adf9c6164437afafc09678e94e8febe901c
           path: trusted
           persist-credentials: false
       - name: Checkout exact caller commit
@@ -40,12 +42,13 @@ jobs:
       - name: Verify reference boundary cases
         run: python3 trusted/examiner/test_harness.py
       - name: Execute isolated candidate against randomized oracle
+        id: probe
         env:
           BU_CHALLENGE: ${{ inputs.challenge }}
         run: python3 trusted/examiner/harness.py "$BU_CHALLENGE" candidate/solution.py
   attest:
     needs: examine
-    if: ${{ always() && (needs.examine.result == 'success' || needs.examine.result == 'failure') }}
+    if: ${{ always() && (needs.examine.outputs.verdict == 'passed' || needs.examine.outputs.verdict == 'failed') }}
     runs-on: ubuntu-24.04
     timeout-minutes: 3
     permissions:
@@ -57,7 +60,7 @@ jobs:
           BU_SUBMISSION: ${{ inputs.submission }}
           BU_NONCE: ${{ inputs.nonce }}
           BU_CHALLENGE: ${{ inputs.challenge }}
-          BU_RESULT: ${{ needs.examine.result }}
+          BU_RESULT: ${{ needs.examine.outputs.verdict }}
         shell: bash
         run: |
           python3 - <<'PY'
@@ -76,7 +79,8 @@ jobs:
                   if len(raw)>32768: raise ValueError('token size')
                   token=json.loads(raw)['value']
               print('::add-mask::'+token)
-              status='passed' if os.environ['BU_RESULT']=='success' else 'failed'
+              status=os.environ['BU_RESULT']
+              if status not in ('passed','failed'): raise ValueError('verdict')
               body=json.dumps({'submission':submission,'nonce':nonce,'challenge':challenge,'status':status}).encode()
               request=urllib.request.Request(audience,data=body,method='POST',headers={'Authorization':'Bearer '+token,'Content-Type':'application/json'})
               with urllib.request.urlopen(request,timeout=30) as response:
